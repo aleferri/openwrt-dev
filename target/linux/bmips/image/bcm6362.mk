@@ -50,7 +50,6 @@ define Device/dlink_dsl-3580l
   CFE_RSA_SIGNATURE := DSL-3580_EU
   DEVICE_PACKAGES += $(USB2_PACKAGES) \
     $(B43_PACKAGES) \
-    kmod-bcm6362-wlan-shim \
     broadcom-6362-sprom broadcom-4360-sprom \
     kmod-leds-bcm6328 kmod-leds-gpio
 endef
