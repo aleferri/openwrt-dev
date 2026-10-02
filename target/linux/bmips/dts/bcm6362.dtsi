@@ -643,7 +643,7 @@
 
 			device_type = "pci";
 			bus-range = <0x00 0x01>;
-			ranges = <0x2000000 0 0x10f00000 0x10f00000 0 0x1000000>;
+			ranges = <0x2000000 0 0xa0000000 0xa0000000 0 0x1000000>;
 			linux,pci-probe-only = <1>;
 
 			interrupt-parent = <&periph_intc>;
@@ -664,6 +664,21 @@
 			brcm,serdes = <&serdes_cntl>;
 
 			status = "disabled";
+		};
+
+		fap: coprocessor@11001000 {
+			compatible = "brcm,bcm6362-fap";
+			reg = <0x11001000 0x2000>,
+			      <0x11004000 0x4000>,
+			      <0x11010000 0x8000>;
+			reg-names = "regs", "qsm", "psm";
+
+			interrupt-parent = <&periph_intc>;
+			interrupts = <BCM6362_IRQ_FAP>;
+
+			clocks = <&periph_clk BCM6362_CLK_FAP>;
+			resets = <&periph_rst BCM6362_RST_FAP>;
+			power-domains = <&periph_pwr BCM6362_POWER_DOMAIN_FAP>;
 		};
 	};
 };

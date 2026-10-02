@@ -118,6 +118,7 @@ $(eval $(call BuildPackage,broadcom-4331-sprom))
 define Package/broadcom-4360-sprom
   $(Package/broadcom-sprom-default)
   TITLE:=BCM4360 Fallback SPROM
+  DEPENDS:=+@DRIVER_11AC_SUPPORT
 endef
 
 define Package/broadcom-4360-sprom/install
