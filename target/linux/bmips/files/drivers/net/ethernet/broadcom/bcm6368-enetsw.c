@@ -12,6 +12,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
 #include <linux/ethtool.h>
+#include <linux/hrtimer.h>
 #include <linux/if_vlan.h>
 #include <linux/interrupt.h>
 #include <linux/of_clk.h>
@@ -41,6 +42,9 @@
 #define ENETSW_DEF_RX_DESC		64
 #define ENETSW_DEF_TX_DESC		32
 #define ENETSW_DEF_CPY_BREAK		128
+
+/* tx reclaim delay when there is no tx dma irq */
+#define ENETSW_TX_TIMER_NS		(100 * NSEC_PER_USEC)
 
 /* maximum burst len for dma (4 bytes unit) */
 #define ENETSW_DMA_MAXBURST		8
@@ -220,6 +224,9 @@ struct bcm6368_enetsw {
 
 	/* lock used by tx reclaim and xmit */
 	spinlock_t tx_lock;
+
+	/* schedules tx reclaim when there is no tx dma irq */
+	struct hrtimer tx_timer;
 
 	/* network device reference */
 	struct net_device *net_dev;
@@ -503,6 +510,24 @@ static int bcm6368_enetsw_tx_reclaim(struct net_device *ndev, int force,
 	return released;
 }
 
+static void bcm6368_enetsw_tx_timer_arm(struct bcm6368_enetsw *priv)
+{
+	if (!hrtimer_is_queued(&priv->tx_timer))
+		hrtimer_start(&priv->tx_timer,
+			      ns_to_ktime(ENETSW_TX_TIMER_NS),
+			      HRTIMER_MODE_REL);
+}
+
+static enum hrtimer_restart bcm6368_enetsw_tx_timer(struct hrtimer *t)
+{
+	struct bcm6368_enetsw *priv = container_of(t, struct bcm6368_enetsw,
+						   tx_timer);
+
+	napi_schedule(&priv->napi);
+
+	return HRTIMER_NORESTART;
+}
+
 /*
  * poll func, called by network core
  */
@@ -533,6 +558,9 @@ static int bcm6368_enetsw_poll(struct napi_struct *napi, int budget)
 	/* no more packet in rx/tx queue, remove device from poll
 	 * queue */
 	napi_complete_done(napi, rx_work_done);
+
+	if (priv->irq_tx == -1 && priv->tx_desc_count < priv->tx_ring_size)
+		bcm6368_enetsw_tx_timer_arm(priv);
 
 	/* restore rx/tx interrupt */
 	dmac_writel(priv, DMAC_IR_PKTDONE_MASK,
@@ -641,6 +669,9 @@ bcm6368_enetsw_start_xmit(struct sk_buff *skb, struct net_device *ndev)
 	/* kick tx dma */
 	dmac_writel(priv, DMAC_CHANCFG_EN_MASK, DMAC_CHANCFG_REG,
 		    priv->tx_chan);
+
+	if (priv->irq_tx == -1)
+		bcm6368_enetsw_tx_timer_arm(priv);
 
 	/* stop queue if no more desc available */
 	if (!priv->tx_desc_count)
@@ -861,6 +892,7 @@ static int bcm6368_enetsw_stop(struct net_device *ndev)
 
 	netif_stop_queue(ndev);
 	napi_disable(&priv->napi);
+	hrtimer_cancel(&priv->tx_timer);
 	del_timer_sync(&priv->rx_timeout);
 
 	/* mask all interrupts */
@@ -920,7 +952,17 @@ static int bcm6368_enetsw_probe(struct platform_device *pdev)
 	unsigned char dev_addr[ETH_ALEN];
 	unsigned i;
 	int num_resets;
+	int mac_ret;
 	int ret;
+
+	/*
+	 * Look the MAC address up before attaching the power domains:
+	 * a deferral after genpd_dev_pm_attach_by_id() would leave the
+	 * virtual genpd devices registered and make the retry fail.
+	 */
+	mac_ret = of_get_mac_address(node, dev_addr);
+	if (mac_ret == -EPROBE_DEFER)
+		return mac_ret;
 
 	ndev = devm_alloc_etherdev(dev, sizeof(*priv));
 	if (!ndev)
@@ -1005,11 +1047,7 @@ static int bcm6368_enetsw_probe(struct platform_device *pdev)
 	priv->tx_ring_size = ENETSW_DEF_TX_DESC;
 	priv->copybreak = ENETSW_DEF_CPY_BREAK;
 
-	ret = of_get_mac_address(node, dev_addr);
-	if (ret == -EPROBE_DEFER)
-		return ret;
-
-	if (is_valid_ether_addr(dev_addr)) {
+	if (!mac_ret && is_valid_ether_addr(dev_addr)) {
 		dev_addr_set(ndev, dev_addr);
 		dev_info(dev, "mtd mac %pM\n", dev_addr);
 	} else {
@@ -1073,6 +1111,9 @@ static int bcm6368_enetsw_probe(struct platform_device *pdev)
 	spin_lock_init(&priv->rx_lock);
 
 	timer_setup(&priv->rx_timeout, bcm6368_enetsw_refill_rx_timer, 0);
+
+	hrtimer_init(&priv->tx_timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+	priv->tx_timer.function = bcm6368_enetsw_tx_timer;
 
 	/* register netdevice */
 	ndev->netdev_ops = &bcm6368_enetsw_ops;
