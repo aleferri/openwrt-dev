@@ -920,7 +920,17 @@ static int bcm6368_enetsw_probe(struct platform_device *pdev)
 	unsigned char dev_addr[ETH_ALEN];
 	unsigned i;
 	int num_resets;
+	int mac_ret;
 	int ret;
+
+	/*
+	 * Look the MAC address up before attaching the power domains:
+	 * a deferral after genpd_dev_pm_attach_by_id() would leave the
+	 * virtual genpd devices registered and make the retry fail.
+	 */
+	mac_ret = of_get_mac_address(node, dev_addr);
+	if (mac_ret == -EPROBE_DEFER)
+		return mac_ret;
 
 	ndev = devm_alloc_etherdev(dev, sizeof(*priv));
 	if (!ndev)
@@ -1005,11 +1015,7 @@ static int bcm6368_enetsw_probe(struct platform_device *pdev)
 	priv->tx_ring_size = ENETSW_DEF_TX_DESC;
 	priv->copybreak = ENETSW_DEF_CPY_BREAK;
 
-	ret = of_get_mac_address(node, dev_addr);
-	if (ret == -EPROBE_DEFER)
-		return ret;
-
-	if (is_valid_ether_addr(dev_addr)) {
+	if (!mac_ret && is_valid_ether_addr(dev_addr)) {
 		dev_addr_set(ndev, dev_addr);
 		dev_info(dev, "mtd mac %pM\n", dev_addr);
 	} else {
